@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>RAG Chat UI</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      background-color: #f7fafc;
+      margin: 0;
+      padding: 2rem;
+    }
+    .container {
+      max-width: 800px;
+      margin: auto;
+      background: white;
+      padding: 2rem;
+      border-radius: 1rem;
+      box-shadow: 0 0 20px rgba(0,0,0,0.1);
+    }
+    h2 {
+      margin-top: 0;
+    }
+    .chat-box {
+      background: #edf2f7;
+      border-radius: 0.5rem;
+      padding: 1rem;
+      height: 300px;
+      overflow-y: auto;
+      margin-bottom: 1rem;
+    }
+    .chat-entry {
+      margin-bottom: 1rem;
+    }
+    .user-question {
+      font-weight: bold;
+      color: #2d3748;
+    }
+    .assistant-answer {
+      color: #4a5568;
+    }
+    form input[type="text"] {
+      width: 80%;
+      padding: 0.5rem;
+      font-size: 1rem;
+    }
+    form button {
+      padding: 0.5rem 1rem;
+      font-size: 1rem;
+      background: #2b6cb0;
+      color: white;
+      border: none;
+      border-radius: 0.25rem;
+      cursor: pointer;
+    }
+    form button:hover {
+      background: #2c5282;
+    }
+    ul {
+      padding-left: 1.25rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h2>🗂 Ingested Files</h2>
+    <ul>
+      {% for f in files %}
+        <li>{{ f }}</li>
+      {% endfor %}
+    </ul>
+
+    <h2>💬 Ask a Question</h2>
+    <div class="chat-box">
+      {% for entry in chat %}
+        <div class="chat-entry">
+          <div class="user-question">You: {{ entry.q }}</div>
+          <div class="assistant-answer">AI: {{ entry.a | safe }}</div>
+        </div>
+      {% endfor %}
+    </div>
+
+    <form action="/ask" method="post">
+      <input type="text" name="q" placeholder="Enter your question..." required />
+      <button type="submit">Ask</button>
+    </form>
+  </div>
+</body>
+</html>

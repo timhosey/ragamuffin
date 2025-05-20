@@ -98,6 +98,7 @@ def ingest_file(filepath):
     docs = load_document(filepath)
     splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
     chunks = splitter.split_documents(docs)
+    chunks = [c for c in chunks if c.page_content]
     embedding = OllamaEmbeddings(model=OLLAMA_EMBED_MODEL, base_url=OLLAMA_BASE_URL)
     db = Chroma(
         embedding_function=embedding,

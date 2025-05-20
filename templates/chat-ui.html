@@ -68,12 +68,6 @@
 </head>
 <body>
   <div class="container">
-    <h2>🗂 Ingested Files</h2>
-    <ul>
-      {% for f in files %}
-        <li>{{ f }}</li>
-      {% endfor %}
-    </ul>
 
     <h2>💬 Ask a Question</h2>
     <div class="chat-box" id="chatBox">
@@ -89,6 +83,15 @@
       <input type="text" name="q" placeholder="Enter your question..." required autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
       <button type="submit">Ask</button>
     </form>
+
+    <h2>🗂 Ingested Files</h2>
+    <input type="text" id="fileFilter" placeholder="Filter files..." style="width:100%;padding:0.5rem;margin-bottom:0.5rem;">
+    <ul id="fileList"></ul>
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 0.5rem;">
+      <button id="prevPage">⬅️ Prev</button>
+      <span id="pageInfo">Page 1</span>
+      <button id="nextPage">Next ➡️</button>
+    </div>
   </div>
   <script>
     const chatBox = document.getElementById("chatBox");
@@ -136,5 +139,48 @@
       }
     });
   </script>
+<script>
+  const fileInput = document.getElementById("fileFilter");
+  const fileList = document.getElementById("fileList");
+  const originalFiles = [{% for f in files %}"{{ f }}"{% if not loop.last %}, {% endif %}{% endfor %}];
+  const pageInfo = document.getElementById("pageInfo");
+  const prevPageBtn = document.getElementById("prevPage");
+  const nextPageBtn = document.getElementById("nextPage");
+
+  let currentPage = 1;
+  const pageSize = 10;
+
+  function updateFileList() {
+    const query = fileInput.value.toLowerCase();
+    const filtered = originalFiles.filter(f => f.toLowerCase().includes(query));
+    const totalPages = Math.ceil(filtered.length / pageSize);
+    currentPage = Math.min(currentPage, totalPages || 1);
+    const start = (currentPage - 1) * pageSize;
+    const visible = filtered.slice(start, start + pageSize);
+    fileList.innerHTML = visible.map(f => `<li>${f}</li>`).join("");
+    pageInfo.textContent = `Page ${currentPage} of ${Math.max(totalPages, 1)}`;
+    prevPageBtn.disabled = currentPage === 1;
+    nextPageBtn.disabled = currentPage === totalPages || totalPages === 0;
+  }
+
+  fileInput.addEventListener("input", () => {
+    currentPage = 1;
+    updateFileList();
+  });
+
+  prevPageBtn.addEventListener("click", () => {
+    if (currentPage > 1) {
+      currentPage--;
+      updateFileList();
+    }
+  });
+
+  nextPageBtn.addEventListener("click", () => {
+    currentPage++;
+    updateFileList();
+  });
+
+  updateFileList();
+</script>
 </body>
 </html>

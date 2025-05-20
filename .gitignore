@@ -1,5 +1,7 @@
 .env
 docs/
 chroma_store/
-.DS_Store
+.DS_*
 known_hashes.json
+*.pkg
+flask_session/

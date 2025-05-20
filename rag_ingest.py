@@ -10,6 +10,9 @@ from langchain_chroma import Chroma
 
 load_dotenv()
 
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+
 WATCH_DIR = "./docs"
 CHROMA_DIR = "./chroma_store"
 HASH_DB = "known_hashes.json"
@@ -43,32 +46,38 @@ def ingest_file(filepath):
     docs = load_document(filepath)
     splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
     chunks = splitter.split_documents(docs)
-    embedding = OllamaEmbeddings(model="nomic-embed-text")
+    embedding = OllamaEmbeddings(model=OLLAMA_EMBED_MODEL, base_url=OLLAMA_BASE_URL)
     Chroma.from_documents(chunks, embedding, persist_directory=CHROMA_DIR)
+
+    print("📄 Embedded chunks:")
+    for chunk in chunks:
+        print("-", chunk.page_content[:150])
 
 def main():
     known_hashes = load_hash_db()
     print("📂 Watching for files in:", WATCH_DIR)
 
-    while True:
-        for fname in os.listdir(WATCH_DIR):
-            if not (fname.endswith(".pdf") or fname.endswith(".md")):
-                continue
-            path = os.path.join(WATCH_DIR, fname)
-            h = file_hash(path)
+    try:
+        while True:
+            for root, _, files in os.walk(WATCH_DIR):
+                for fname in files:
+                    if not (fname.endswith(".pdf") or fname.endswith(".md")):
+                        continue
+                    path = os.path.join(root, fname)
+                    h = file_hash(path)
 
-            if known_hashes.get(fname) != h:
-                print(f"🆕 Ingesting: {fname}")
-                try:
-                    ingest_file(path)
-                    known_hashes[fname] = h
-                    save_hash_db(known_hashes)
-                    print(f"✅ Done ingesting: {fname}")
-                except Exception as e:
-                    print(f"⚠️ Failed to ingest {fname}: {e}")
-            else:
-                print(f"⏩ Skipping unchanged: {fname}")
-        time.sleep(SCAN_INTERVAL)
+                    if known_hashes.get(path) != h:
+                        print(f"🆕 Ingesting: {path}")
+                        try:
+                            ingest_file(path)
+                            known_hashes[path] = h
+                            save_hash_db(known_hashes)
+                            print(f"✅ Done ingesting: {path}")
+                        except Exception as e:
+                            print(f"⚠️ Failed to ingest {path}: {e}")
+            time.sleep(SCAN_INTERVAL)
+    except KeyboardInterrupt:
+        print("\n👋 Ingest watcher stopped. Goodbye!")
 
 if __name__ == "__main__":
     main()

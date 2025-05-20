@@ -2,3 +2,4 @@
 docs/
 chroma_store/
 .DS_Store
+known_hashes.json

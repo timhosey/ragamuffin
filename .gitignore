@@ -5,3 +5,4 @@ chroma_store/
 known_hashes.json
 *.pkg
 flask_session/
+*.log

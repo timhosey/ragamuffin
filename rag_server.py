@@ -2,6 +2,10 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3")
+OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+
 from flask import Flask, request, session, redirect, url_for, render_template
 from datetime import timedelta
 from langchain_ollama import OllamaEmbeddings, OllamaLLM
@@ -42,10 +46,10 @@ def ask_question():
     if not query:
         return redirect(url_for("index"))
 
-    embedding = OllamaEmbeddings(model="nomic-embed-text")
+    embedding = OllamaEmbeddings(model=OLLAMA_EMBED_MODEL, base_url=OLLAMA_BASE_URL)
     db = Chroma(persist_directory=CHROMA_DIR, embedding_function=embedding)
     retriever = db.as_retriever()
-    llm = OllamaLLM(model="llama3")
+    llm = OllamaLLM(model=OLLAMA_MODEL, base_url=OLLAMA_BASE_URL)
 
     qa_chain = RetrievalQA.from_chain_type(llm=llm, retriever=retriever)
     response = qa_chain.invoke(query)

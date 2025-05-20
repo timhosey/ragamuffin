@@ -109,6 +109,20 @@ Answer:""")
 
     return redirect(url_for("index"))
 
+@app.route("/refresh", methods=["POST"])
+def refresh_retriever():
+    try:
+        log("🔁 Manual retriever refresh triggered via web UI")
+        embedding = OllamaEmbeddings(model=OLLAMA_EMBED_MODEL, base_url=OLLAMA_BASE_URL)
+        db = Chroma(persist_directory=CHROMA_DIR, embedding_function=embedding)
+        global retriever
+        retriever = db.as_retriever()
+        session["refresh_success"] = True
+    except Exception as e:
+        session["refresh_success"] = False
+        log(f"⚠️ Web-triggered retriever refresh failed: {e}")
+    return redirect(url_for("index"))
+
 ingest_process = None
 stop_stream = threading.Event()
 
@@ -157,16 +171,3 @@ if __name__ == "__main__":
     atexit.register(on_exit)
     threading.Thread(target=refresh_retriever_periodically, daemon=True).start()
     app.run(host="0.0.0.0", port=8001, debug=False)
-@app.route("/refresh", methods=["POST"])
-def refresh_retriever():
-    try:
-        log("🔁 Manual retriever refresh triggered via web UI")
-        embedding = OllamaEmbeddings(model=OLLAMA_EMBED_MODEL, base_url=OLLAMA_BASE_URL)
-        db = Chroma(persist_directory=CHROMA_DIR, embedding_function=embedding)
-        global retriever
-        retriever = db.as_retriever()
-        session["refresh_success"] = True
-    except Exception as e:
-        session["refresh_success"] = False
-        log(f"⚠️ Web-triggered retriever refresh failed: {e}")
-    return redirect(url_for("index"))

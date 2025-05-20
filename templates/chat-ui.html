@@ -71,7 +71,7 @@
     </ul>
 
     <h2>💬 Ask a Question</h2>
-    <div class="chat-box">
+    <div class="chat-box" id="chatBox">
       {% for entry in chat %}
         <div class="chat-entry">
           <div class="user-question">You: {{ entry.q }}</div>
@@ -80,10 +80,56 @@
       {% endfor %}
     </div>
 
-    <form action="/ask" method="post">
-      <input type="text" name="q" placeholder="Enter your question..." required />
+    <form id="chatForm">
+      <input type="text" name="q" placeholder="Enter your question..." required autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
       <button type="submit">Ask</button>
     </form>
   </div>
+  <script>
+    const chatBox = document.getElementById("chatBox");
+    if (chatBox) {
+      chatBox.scrollTop = chatBox.scrollHeight;
+    }
+
+    const form = document.getElementById("chatForm");
+    const input = form.querySelector("input[name='q']");
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const question = input.value.trim();
+      if (!question) return;
+
+      // Display the user question immediately
+      const entryDiv = document.createElement("div");
+      entryDiv.classList.add("chat-entry");
+      entryDiv.innerHTML = `
+        <div class="user-question">You: ${question}</div>
+        <div class="assistant-answer">AI: <em>Thinking...</em></div>
+      `;
+      chatBox.appendChild(entryDiv);
+      chatBox.scrollTop = chatBox.scrollHeight;
+
+      input.value = "";
+
+      try {
+        const response = await fetch("/ask", {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({ q: question }),
+        });
+
+        const html = await response.text();
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(html, "text/html");
+        const latestEntry = doc.querySelector(".chat-entry:last-child");
+        if (latestEntry) {
+          entryDiv.replaceWith(latestEntry);
+          chatBox.scrollTop = chatBox.scrollHeight;
+        }
+      } catch (err) {
+        entryDiv.querySelector(".assistant-answer").innerHTML = "AI: <em>Failed to get response.</em>";
+      }
+    });
+  </script>
 </body>
 </html>

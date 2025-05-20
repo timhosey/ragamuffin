@@ -6,14 +6,16 @@
   <style>
     body {
       font-family: sans-serif;
-      background-color: #f7fafc;
+      background-color: #1a202c;
+      color: #e2e8f0;
       margin: 0;
       padding: 2rem;
     }
     .container {
       max-width: 800px;
       margin: auto;
-      background: white;
+      background: #2d3748;
+      color: #edf2f7;
       padding: 2rem;
       border-radius: 1rem;
       box-shadow: 0 0 20px rgba(0,0,0,0.1);
@@ -22,7 +24,7 @@
       margin-top: 0;
     }
     .chat-box {
-      background: #edf2f7;
+      background: #4a5568;
       border-radius: 0.5rem;
       padding: 1rem;
       height: 300px;
@@ -34,27 +36,30 @@
     }
     .user-question {
       font-weight: bold;
-      color: #2d3748;
+      color: #fbd38d;
     }
     .assistant-answer {
-      color: #4a5568;
+      color: #bee3f8;
     }
     form input[type="text"] {
       width: 80%;
       padding: 0.5rem;
       font-size: 1rem;
+      background: #1a202c;
+      color: #edf2f7;
+      border: 1px solid #4a5568;
     }
     form button {
       padding: 0.5rem 1rem;
       font-size: 1rem;
-      background: #2b6cb0;
+      background: #3182ce;
       color: white;
       border: none;
       border-radius: 0.25rem;
       cursor: pointer;
     }
     form button:hover {
-      background: #2c5282;
+      background: #2b6cb0;
     }
     ul {
       padding-left: 1.25rem;
@@ -99,6 +104,8 @@
       const question = input.value.trim();
       if (!question) return;
 
+      input.value = "";
+
       // Display the user question immediately
       const entryDiv = document.createElement("div");
       entryDiv.classList.add("chat-entry");
@@ -108,8 +115,6 @@
       `;
       chatBox.appendChild(entryDiv);
       chatBox.scrollTop = chatBox.scrollHeight;
-
-      input.value = "";
 
       try {
         const response = await fetch("/ask", {

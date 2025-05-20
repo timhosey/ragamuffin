@@ -1,5 +1,8 @@
 import os
+import subprocess
+import atexit
 from dotenv import load_dotenv
+import threading
 load_dotenv()
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
@@ -68,5 +71,38 @@ def ask_question():
 
     return redirect(url_for("index"))
 
+ingest_process = None
+stop_stream = threading.Event()
+
+def shutdown_ingest():
+    if ingest_process:
+        print("🛑 Stopping rag_ingest.py...")
+        stop_stream.set()
+        ingest_process.terminate()
+        ingest_process.wait()
+        print("✅ rag_ingest.py has stopped.")
+
+def on_exit():
+    print("👋 rag_server is now closing.")
+
 if __name__ == "__main__":
+    ingest_process = subprocess.Popen(
+        ["python", "-u", "rag_ingest.py"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True
+    )
+
+    def stream_ingest_output():
+        while not stop_stream.is_set():
+            if ingest_process.stdout is None:
+                break
+            line = ingest_process.stdout.readline()
+            if not line:
+                break
+            print("🛰️ [ingest]", line.strip())
+
+    threading.Thread(target=stream_ingest_output, daemon=True).start()
+    atexit.register(shutdown_ingest)
+    atexit.register(on_exit)
     app.run(host="0.0.0.0", port=8001, debug=False)

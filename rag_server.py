@@ -3,13 +3,24 @@ import subprocess
 import atexit
 from dotenv import load_dotenv
 import threading
+from datetime import datetime
 load_dotenv()
+
+LOG_FILE = "rag_server.log"
+
+def log(msg):
+    timestamp = datetime.now().strftime("[%Y-%m-%d %H:%M:%S]")
+    line = f"{timestamp} {msg}"
+    print(line)
+    with open(LOG_FILE, "a") as f:
+        f.write(line + "\n")
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3")
 OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
 
 from flask import Flask, request, session, redirect, url_for, render_template
+from flask_session import Session
 from datetime import timedelta
 from langchain_ollama import OllamaEmbeddings, OllamaLLM
 from langchain_chroma import Chroma
@@ -24,6 +35,8 @@ if not SECRET:
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = SECRET
+app.config["SESSION_TYPE"] = "filesystem"
+Session(app)
 app.permanent_session_lifetime = timedelta(days=1)
 
 # === Data sources ===
@@ -76,14 +89,14 @@ stop_stream = threading.Event()
 
 def shutdown_ingest():
     if ingest_process:
-        print("🛑 Stopping rag_ingest.py...")
+        log("🛑 Stopping rag_ingest.py...")
         stop_stream.set()
         ingest_process.terminate()
         ingest_process.wait()
-        print("✅ rag_ingest.py has stopped.")
+        log("✅ rag_ingest.py has stopped.")
 
 def on_exit():
-    print("👋 rag_server is now closing.")
+    log("👋 rag_server is now closing.")
 
 if __name__ == "__main__":
     ingest_process = subprocess.Popen(
@@ -100,7 +113,7 @@ if __name__ == "__main__":
             line = ingest_process.stdout.readline()
             if not line:
                 break
-            print("🛰️ [ingest]", line.strip())
+            log(f"🛰️ [ingest] {line.strip()}")
 
     threading.Thread(target=stream_ingest_output, daemon=True).start()
     atexit.register(shutdown_ingest)

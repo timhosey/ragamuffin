@@ -42,12 +42,36 @@ def save_hash_db(hashes):
     with open(HASH_DB, "w") as f:
         json.dump(hashes, f, indent=2)
 
+def cleanup_orphaned_files(existing_paths):
+    embedding = OllamaEmbeddings(model=OLLAMA_EMBED_MODEL, base_url=OLLAMA_BASE_URL)
+    db = Chroma(persist_directory=CHROMA_DIR, embedding_function=embedding)
+    collection = db.get()
+    seen_sources = set(existing_paths)
+
+    to_delete = []
+    for metadata in collection["metadatas"]:
+        if metadata and "source" in metadata and metadata["source"] not in seen_sources:
+            to_delete.append(metadata["source"])
+
+    if not to_delete:
+        print("🧼 No stale files found to clean up.")
+    else:
+        for source in set(to_delete):
+            print(f"🧹 Removing stale vectors for: {source}")
+            db.delete(where={"source": source})
+        print(f"✅ Removed {len(set(to_delete))} stale file(s) from vector store.")
+
 def ingest_file(filepath):
     docs = load_document(filepath)
     splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
     chunks = splitter.split_documents(docs)
     embedding = OllamaEmbeddings(model=OLLAMA_EMBED_MODEL, base_url=OLLAMA_BASE_URL)
-    Chroma.from_documents(chunks, embedding, persist_directory=CHROMA_DIR)
+    Chroma.from_documents(
+        chunks,
+        embedding,
+        persist_directory=CHROMA_DIR,
+        metadatas=[{"source": filepath}] * len(chunks)
+    )
 
     print("📄 Embedded chunks:")
     for chunk in chunks:
@@ -75,6 +99,12 @@ def main():
                             print(f"✅ Done ingesting: {path}")
                         except Exception as e:
                             print(f"⚠️ Failed to ingest {path}: {e}")
+            all_current_paths = []
+            for root, _, files in os.walk(WATCH_DIR):
+                for fname in files:
+                    if fname.endswith(".pdf") or fname.endswith(".md"):
+                        all_current_paths.append(os.path.join(root, fname))
+            cleanup_orphaned_files(all_current_paths)
             time.sleep(SCAN_INTERVAL)
     except KeyboardInterrupt:
         print("\n👋 Ingest watcher stopped. Goodbye!")

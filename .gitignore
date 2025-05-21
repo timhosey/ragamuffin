@@ -1,6 +1,6 @@
 .env
 docs/
-chroma_store/
+faiss_store/
 .DS_*
 known_hashes.json
 *.pkg

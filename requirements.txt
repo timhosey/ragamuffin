@@ -3,10 +3,9 @@ python-dotenv
 markdown2
 langchain
 langchain-community
-langchain-chroma
 langchain-ollama
-chromadb
 tiktoken
 pypdf
 unstructured[all-docs]
 flask-session
+faiss-cpu

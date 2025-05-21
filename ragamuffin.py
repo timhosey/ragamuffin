@@ -9,7 +9,7 @@ load_dotenv()
 
 SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", "You are a helpful assistant who answers questions clearly and concisely based only on the provided documents. Avoid using the phrase 'According to the context' wherever possible.")
 
-LOG_FILE = "rag_server.log"
+LOG_FILE = "ragamuffin.log"
 
 def log(msg):
     timestamp = datetime.now().strftime("[%Y-%m-%d %H:%M:%S]")
@@ -93,7 +93,32 @@ Answer:""")
         chain_type="stuff",
         chain_type_kwargs={"prompt": prompt_template}
     )
-    response = qa_chain.invoke(query)
+
+    try:
+        raw_docs = retriever.get_relevant_documents(query)
+        for idx, doc in enumerate(raw_docs):
+            log(f"🔍 Doc {idx}: type={type(doc.page_content)}, value={repr(doc.page_content)[:100]}")
+    except Exception as e:
+        log(f"❌ Failed to retrieve documents: {e}")
+        raw_docs = []
+
+    if not raw_docs:
+        log("⚠️ No raw documents retrieved. Investigating possible causes.")
+
+    docs = []
+    for doc in raw_docs:
+        if isinstance(doc.page_content, str) and doc.page_content.strip():
+            docs.append(doc)
+        else:
+            log(f"⚠️ Skipping invalid doc: {doc}")
+    invalid_docs = [doc for doc in raw_docs if not isinstance(doc.page_content, str) or not doc.page_content.strip()]
+    for doc in invalid_docs:
+        log(f"❌ Invalid document encountered: {doc.metadata}")
+    log(f"🔍 Retrieved {len(docs)} docs for: '{query}'")
+    for doc in docs:
+        log(f"• {doc.metadata.get('source', 'unknown')} — {doc.page_content[:100]}")
+
+    response = qa_chain.combine_documents_chain.run(input_documents=docs, question=query)
 
     # If the response is a dict (some chains return structured output), extract the answer string
     if isinstance(response, dict):
@@ -128,14 +153,14 @@ stop_stream = threading.Event()
 
 def shutdown_ingest():
     if ingest_process:
-        log("🛑 Stopping rag_ingest.py...")
+        log("🛑 Stopping ingest...")
         stop_stream.set()
         ingest_process.terminate()
         ingest_process.wait()
-        log("✅ rag_ingest.py has stopped.")
+        log("✅ ingest has stopped.")
 
 def on_exit():
-    log("👋 rag_server is now closing.")
+    log("🧁 RAGamuffin is now closing.")
 
 def refresh_retriever_periodically(interval=60):
     global retriever
@@ -151,7 +176,7 @@ def refresh_retriever_periodically(interval=60):
 
 if __name__ == "__main__":
     ingest_process = subprocess.Popen(
-        ["python", "-u", "rag_ingest.py"],
+        ["python", "-u", "ingest.py"],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True

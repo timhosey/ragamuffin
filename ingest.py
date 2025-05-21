@@ -95,18 +95,32 @@ def cleanup_orphaned_files(existing_paths):
         cleanup_orphaned_files.notified = True
 
 def ingest_file(filepath):
+    filepath = os.path.abspath(filepath)
+    # Remove old vectors for this file before re-ingesting
+    embedding = OllamaEmbeddings(model=OLLAMA_EMBED_MODEL, base_url=OLLAMA_BASE_URL)
+    db = Chroma(embedding_function=embedding, persist_directory=CHROMA_DIR)
+    db.delete(where={"source": filepath})
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🤖 Using embedding model: {OLLAMA_EMBED_MODEL}")
     docs = load_document(filepath)
     splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
     chunks = splitter.split_documents(docs)
-    chunks = [c for c in chunks if c.page_content]
-    embedding = OllamaEmbeddings(model=OLLAMA_EMBED_MODEL, base_url=OLLAMA_BASE_URL)
-    db = Chroma(
-        embedding_function=embedding,
-        persist_directory=CHROMA_DIR
-    )
+    # Debug: Identify any chunks with missing content
+    for i, c in enumerate(chunks):
+        if not c.page_content or not c.page_content.strip():
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ❗️ Skipping empty chunk {i} in {filepath}")
+    filtered_chunks = [c for c in chunks if c.page_content and c.page_content.strip()]
+    skipped = len(chunks) - len(filtered_chunks)
+    if skipped:
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ⚠️ Skipped {skipped} empty chunk(s) for {filepath}")
+    chunks = filtered_chunks
+
     for chunk in chunks:
         chunk.metadata["source"] = filepath
+
+    assert all(c.page_content for c in chunks), f"Found chunk with None content in: {filepath}"
+    # Add the updated chunks
     db.add_documents(documents=chunks)
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ✅ Added {len(chunks)} chunks to Chroma")
 
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 📄 Embedded chunks:")
     for chunk in chunks:
@@ -118,6 +132,20 @@ def main():
 
     try:
         while True:
+            all_current_paths = []
+            for root, _, files in os.walk(WATCH_DIR):
+                for fname in files:
+                    if fname.endswith(".pdf") or fname.endswith(".md") or fname.endswith(".epub") or fname.endswith(".xlsx"):
+                        all_current_paths.append(os.path.join(root, fname))
+            cleanup_orphaned_files([os.path.abspath(p) for p in all_current_paths])
+            # Prune known_hashes for missing files
+            missing = [path for path in known_hashes if path not in all_current_paths]
+            if missing:
+                for path in missing:
+                    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🗑️ Removing hash for deleted file: {path}")
+                    del known_hashes[path]
+                save_hash_db(known_hashes)
+
             for root, _, files in os.walk(WATCH_DIR):
                 for fname in files:
                     if not (fname.endswith(".pdf") or fname.endswith(".md") or fname.endswith(".epub") or fname.endswith(".xlsx")):
@@ -134,19 +162,7 @@ def main():
                             print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ✅ Done ingesting: {path}")
                         except Exception as e:
                             print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ⚠️ Failed to ingest {path}: {e}")
-            all_current_paths = []
-            for root, _, files in os.walk(WATCH_DIR):
-                for fname in files:
-                    if fname.endswith(".pdf") or fname.endswith(".md") or fname.endswith(".epub") or fname.endswith(".xlsx"):
-                        all_current_paths.append(os.path.join(root, fname))
-            # Prune known_hashes for missing files
-            missing = [path for path in known_hashes if path not in all_current_paths]
-            if missing:
-                for path in missing:
-                    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🗑️ Removing hash for deleted file: {path}")
-                    del known_hashes[path]
-                save_hash_db(known_hashes)
-            cleanup_orphaned_files(all_current_paths)
+            
             time.sleep(SCAN_INTERVAL)
     except KeyboardInterrupt:
         print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] \n👋 Ingest watcher stopped. Goodbye!")

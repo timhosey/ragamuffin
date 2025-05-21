@@ -1,16 +1,35 @@
 import os
+import json
 import subprocess
-import atexit
-from dotenv import load_dotenv
 import threading
-from datetime import datetime
+import atexit
 import time
+from datetime import datetime, timedelta
+from flask import Flask, request, session, redirect, url_for, render_template
+from flask_session import Session
+from langchain_ollama import OllamaEmbeddings, OllamaLLM
+from langchain_community.vectorstores import FAISS
+from langchain.chains import RetrievalQA
+from langchain_core.documents import Document
+from langchain.prompts import PromptTemplate
+import markdown2
+from dotenv import load_dotenv
+import re
+
 load_dotenv()
 
-SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", "You are a helpful assistant who answers questions clearly and concisely based only on the provided documents. Avoid using the phrase 'According to the context' wherever possible.")
-
+# === Config ===
 LOG_FILE = "ragamuffin.log"
+FAISS_DIR = "./faiss_store"
+HASH_DB = "known_hashes.json"
 
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3")
+OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", "You are a helpful assistant who answers questions clearly and concisely based only on the provided documents. Avoid using the phrase 'According to the context' wherever possible.")
+SECRET = os.getenv("FLASK_SECRET_KEY")
+
+# === Logging ===
 def log(msg):
     timestamp = datetime.now().strftime("[%Y-%m-%d %H:%M:%S]")
     line = f"{timestamp} {msg}"
@@ -18,21 +37,7 @@ def log(msg):
     with open(LOG_FILE, "a") as f:
         f.write(line + "\n")
 
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3")
-OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
-
-from flask import Flask, request, session, redirect, url_for, render_template
-from flask_session import Session
-from datetime import timedelta
-from langchain_ollama import OllamaEmbeddings, OllamaLLM
-from langchain_chroma import Chroma
-from langchain.chains import RetrievalQA
-import json
-import markdown2
-
-# === App setup ===
-SECRET = os.getenv("FLASK_SECRET_KEY")
+# === App Setup ===
 if not SECRET:
     raise RuntimeError("❌ FLASK_SECRET_KEY not set in .env!")
 
@@ -42,11 +47,37 @@ app.config["SESSION_TYPE"] = "filesystem"
 Session(app)
 app.permanent_session_lifetime = timedelta(days=1)
 
-# === Data sources ===
-CHROMA_DIR = "./chroma_store"
-HASH_DB = "known_hashes.json"
-
 retriever = None
+qa_chain = None
+ingest_process = None
+stop_stream = threading.Event()
+
+def stream_ingest_output():
+    while not stop_stream.is_set():
+        if ingest_process.stdout is None:
+            break
+        line = ingest_process.stdout.readline()
+        if not line:
+            break
+        log(f"🛰️ [ingest] {line.strip()}")
+
+def start_ingest():
+    global ingest_process
+    ingest_process = subprocess.Popen(
+        ["python", "-u", "ingest.py"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True
+    )
+    threading.Thread(target=stream_ingest_output, daemon=True).start()
+
+def shutdown_ingest():
+    if ingest_process:
+        log("🛑 Stopping ingest...")
+        stop_stream.set()
+        ingest_process.terminate()
+        ingest_process.wait()
+        log("✅ ingest has stopped.")
 
 def load_hash_db():
     if os.path.exists(HASH_DB):
@@ -54,10 +85,46 @@ def load_hash_db():
             return json.load(f)
     return {}
 
+def build_qa_chain():
+    global qa_chain
+    llm = OllamaLLM(model=OLLAMA_MODEL, base_url=OLLAMA_BASE_URL)
+    prompt = PromptTemplate.from_template(f"""{SYSTEM_PROMPT}
+
+Context:
+{{context}}
+
+Question:
+{{question}}
+
+Answer:""")
+    qa_chain = RetrievalQA.from_chain_type(
+        llm=llm,
+        retriever=retriever,
+        chain_type="stuff",
+        chain_type_kwargs={"prompt": prompt}
+    )
+
+def refresh_vectorstore():
+    global retriever
+    embedding = OllamaEmbeddings(model=OLLAMA_EMBED_MODEL, base_url=OLLAMA_BASE_URL)
+    index_file_path = os.path.join(FAISS_DIR, "index.faiss")
+    if not os.path.exists(index_file_path):
+        log(f"⚠️ FAISS index file not found at {index_file_path}. Skipping reload.")
+        return
+    db = FAISS.load_local(FAISS_DIR, embedding, allow_dangerous_deserialization=True)
+    retriever = db.as_retriever()
+    try:
+        all_docs = db.docstore._dict.values()
+        log(f"🧠 Vectorstore rehydrated with {len(list(all_docs))} total chunks")
+    except Exception as e:
+        log(f"⚠️ Failed to inspect vectorstore after refresh: {e}")
+    # Rebuild the QA chain after refreshing the vectorstore
+    build_qa_chain()
+
 @app.route("/")
 def index():
-    known_hashes = load_hash_db()
-    file_list = list(known_hashes.keys())
+    import glob
+    file_list = [os.path.basename(f) for f in glob.glob("docs/*.md")]
     chat = session.get("chat_history", [])
     refreshed = session.pop("refresh_success", None)
     return render_template("chat-ui.html", files=file_list, chat=chat, refreshed=refreshed)
@@ -68,65 +135,35 @@ def ask_question():
     if not query:
         return redirect(url_for("index"))
 
-    embedding = OllamaEmbeddings(model=OLLAMA_EMBED_MODEL, base_url=OLLAMA_BASE_URL)
-    db = Chroma(persist_directory=CHROMA_DIR, embedding_function=embedding)
-    global retriever
-    if retriever is None:
-        retriever = db.as_retriever()
-    llm = OllamaLLM(model=OLLAMA_MODEL, base_url=OLLAMA_BASE_URL)
-
-    from langchain.prompts import PromptTemplate
-
-    prompt_template = PromptTemplate.from_template(f"""{SYSTEM_PROMPT}
-
-Context:
-{{context}}
-
-Question:
-{{question}}
-
-Answer:""")
-
-    qa_chain = RetrievalQA.from_chain_type(
-        llm=llm,
-        retriever=retriever,
-        chain_type="stuff",
-        chain_type_kwargs={"prompt": prompt_template}
-    )
-
     try:
-        raw_docs = retriever.get_relevant_documents(query)
-        for idx, doc in enumerate(raw_docs):
-            log(f"🔍 Doc {idx}: type={type(doc.page_content)}, value={repr(doc.page_content)[:100]}")
+        results = retriever.vectorstore.similarity_search_with_score(query)
+        docs = []
+        for result in results:
+            if isinstance(result, tuple) and isinstance(result[0], Document):
+                doc = result[0]
+                if isinstance(doc.page_content, str) and doc.page_content.strip():
+                    docs.append(doc)
+                else:
+                    log(f"⚠️ Skipping invalid document: {doc.metadata}")
+            else:
+                log(f"❌ Invalid result skipped during similarity search: {result}")
+        if not docs:
+            log("⚠️ No relevant documents retrieved.")
+
+        log(f"🔍 Retrieved {len(docs)} docs for: '{query}'")
+        for doc in docs:
+            log(f"• {doc.metadata.get('source', 'unknown')} — {doc.page_content[:100]}")
+
+        response_data = qa_chain.combine_documents_chain.invoke({"input_documents": docs, "question": query})
+        response_text = response_data.get("output_text", str(response_data))
+        answer = markdown2.markdown(
+            response_text,
+            extras=["link-patterns", "target-blank-links"],
+            link_patterns=[(re.compile(r'(https?://[^\s]+)', re.IGNORECASE), r'\1')]
+        )
     except Exception as e:
-        log(f"❌ Failed to retrieve documents: {e}")
-        raw_docs = []
-
-    if not raw_docs:
-        log("⚠️ No raw documents retrieved. Investigating possible causes.")
-
-    docs = []
-    for doc in raw_docs:
-        if isinstance(doc.page_content, str) and doc.page_content.strip():
-            docs.append(doc)
-        else:
-            log(f"⚠️ Skipping invalid doc: {doc}")
-    invalid_docs = [doc for doc in raw_docs if not isinstance(doc.page_content, str) or not doc.page_content.strip()]
-    for doc in invalid_docs:
-        log(f"❌ Invalid document encountered: {doc.metadata}")
-    log(f"🔍 Retrieved {len(docs)} docs for: '{query}'")
-    for doc in docs:
-        log(f"• {doc.metadata.get('source', 'unknown')} — {doc.page_content[:100]}")
-
-    response = qa_chain.combine_documents_chain.run(input_documents=docs, question=query)
-
-    # If the response is a dict (some chains return structured output), extract the answer string
-    if isinstance(response, dict):
-        raw_answer = response.get("result") or response.get("output") or str(response)
-    else:
-        raw_answer = response
-
-    answer = markdown2.markdown(raw_answer)
+        log(f"❌ Failed to answer question: {e}")
+        answer = markdown2.markdown("⚠️ Sorry, there was an error answering your question.")
 
     chat = session.get("chat_history", [])
     chat.append({ "q": query, "a": answer })
@@ -136,63 +173,29 @@ Answer:""")
 
 @app.route("/refresh", methods=["POST"])
 def refresh_retriever():
+    global qa_chain
     try:
         log("🔁 Manual retriever refresh triggered via web UI")
-        embedding = OllamaEmbeddings(model=OLLAMA_EMBED_MODEL, base_url=OLLAMA_BASE_URL)
-        db = Chroma(persist_directory=CHROMA_DIR, embedding_function=embedding)
-        global retriever
-        retriever = db.as_retriever()
+        if ingest_process:
+            ingest_process.terminate()
+            ingest_process.wait()
+            log("♻️ Restarting ingest process...")
+        start_ingest()
+        refresh_vectorstore()
+        build_qa_chain()
         session["refresh_success"] = True
     except Exception as e:
         session["refresh_success"] = False
         log(f"⚠️ Web-triggered retriever refresh failed: {e}")
     return redirect(url_for("index"))
 
-ingest_process = None
-stop_stream = threading.Event()
-
-def shutdown_ingest():
-    if ingest_process:
-        log("🛑 Stopping ingest...")
-        stop_stream.set()
-        ingest_process.terminate()
-        ingest_process.wait()
-        log("✅ ingest has stopped.")
-
-def on_exit():
-    log("🧁 RAGamuffin is now closing.")
-
-def refresh_retriever_periodically(interval=60):
-    global retriever
-    while not stop_stream.is_set():
-        time.sleep(interval)
-        try:
-            log("♻️ Refreshing vector store retriever...")
-            embedding = OllamaEmbeddings(model=OLLAMA_EMBED_MODEL, base_url=OLLAMA_BASE_URL)
-            db = Chroma(persist_directory=CHROMA_DIR, embedding_function=embedding)
-            retriever = db.as_retriever()
-        except Exception as e:
-            log(f"⚠️ Error refreshing retriever: {e}")
+atexit.register(shutdown_ingest)
 
 if __name__ == "__main__":
-    ingest_process = subprocess.Popen(
-        ["python", "-u", "ingest.py"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True
-    )
-
-    def stream_ingest_output():
-        while not stop_stream.is_set():
-            if ingest_process.stdout is None:
-                break
-            line = ingest_process.stdout.readline()
-            if not line:
-                break
-            log(f"🛰️ [ingest] {line.strip()}")
-
-    threading.Thread(target=stream_ingest_output, daemon=True).start()
-    atexit.register(shutdown_ingest)
-    atexit.register(on_exit)
-    threading.Thread(target=refresh_retriever_periodically, daemon=True).start()
+    start_ingest()
+    refresh_vectorstore()
+    if retriever is not None:
+        build_qa_chain()
+    # Periodic refresh every 5 minutes
+    threading.Thread(target=lambda: (lambda interval: [time.sleep(interval) or refresh_vectorstore() or build_qa_chain() for _ in iter(int, 1)])(300), daemon=True).start()
     app.run(host="0.0.0.0", port=8001, debug=False)

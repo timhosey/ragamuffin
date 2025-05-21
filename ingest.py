@@ -1,171 +1,162 @@
 import os
 import time
 import hashlib
-import json
-import requests
-from dotenv import load_dotenv
-from langchain_community.document_loaders import PyPDFLoader, TextLoader, UnstructuredMarkdownLoader, UnstructuredEPubLoader
+from datetime import datetime
+from langchain_community.document_loaders import TextLoader
 from langchain_core.documents import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_ollama import OllamaEmbeddings
-from langchain_chroma import Chroma
-from datetime import datetime
-import pandas as pd
+from langchain_community.vectorstores import FAISS
+from dotenv import load_dotenv
 
 load_dotenv()
-
-# Install pypandoc if it's not installed
-try:
-    import pypandoc
-    pypandoc.get_pandoc_path()
-except (ImportError, OSError):
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 📦 Installing pypandoc and Pandoc...")
-    import subprocess
-    import sys
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "pypandoc"], text=True)
-    import pypandoc
-    pypandoc.download_pandoc()
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
 
-WATCH_DIR = "./docs"
-CHROMA_DIR = "./chroma_store"
-HASH_DB = "known_hashes.json"
+WATCH_DIR = "docs"
+FAISS_DIR = "faiss_store"
 SCAN_INTERVAL = 15  # seconds
 
 os.makedirs(WATCH_DIR, exist_ok=True)
 
-def load_document(filepath):
-    if filepath.endswith(".pdf"):
-        return PyPDFLoader(filepath).load()
-    elif filepath.endswith(".md"):
-        return UnstructuredMarkdownLoader(filepath).load()
-    elif filepath.endswith(".xlsx"):
-        df = pd.read_excel(filepath)
-        text = df.to_string(index=False)
-        return [Document(page_content=text, metadata={"source": filepath})]
-    elif filepath.endswith(".epub"):
-        return UnstructuredEPubLoader(filepath).load()
-    else:
-        return TextLoader(filepath).load()
-    
-def load_gsheet_csv(url):
-    resp = requests.get(url)
-    resp.raise_for_status()
-    df = pd.read_csv(BytesIO(resp.content))
-    text = df.to_string(index=False)
-    return [Document(page_content=text, metadata={"source": url})]
+def load_markdown_file(filepath):
+    try:
+        loader = TextLoader(filepath)
+        docs = loader.load()
+        print(f"[{datetime.now()}] ✅ Loaded {len(docs)} documents from: {filepath}")
+        return docs
+    except Exception as e:
+        print(f"[{datetime.now()}] ❌ Failed to load {filepath}: {e}")
+        return []
 
 def file_hash(filepath):
     with open(filepath, 'rb') as f:
         return hashlib.md5(f.read()).hexdigest()
 
-def load_hash_db():
-    if os.path.exists(HASH_DB):
-        with open(HASH_DB, "r") as f:
-            return json.load(f)
-    return {}
+def ingest_markdown(filepath, known_hashes):
+    if not filepath.lower().endswith(".md"):
+        print(f"[{datetime.now()}] ⏭️ Skipping non-markdown file: {filepath}")
+        return
 
-def save_hash_db(hashes):
-    with open(HASH_DB, "w") as f:
-        json.dump(hashes, f, indent=2)
+    new_hash = file_hash(filepath)
+    if known_hashes.get(filepath) == new_hash:
+        return
 
-def cleanup_orphaned_files(existing_paths):
-    embedding = OllamaEmbeddings(model=OLLAMA_EMBED_MODEL, base_url=OLLAMA_BASE_URL)
-    db = Chroma(persist_directory=CHROMA_DIR, embedding_function=embedding)
-    collection = db.get()
-    seen_sources = set(existing_paths)
+    print(f"[{datetime.now()}] 🔍 Ingesting updated file: {filepath}")
+    docs = load_markdown_file(filepath)
 
-    to_delete = []
-    for metadata in collection["metadatas"]:
-        if metadata and "source" in metadata and metadata["source"] not in seen_sources:
-            to_delete.append(metadata["source"])
+    if not docs:
+        print(f"[{datetime.now()}] ⚠️ No documents loaded from: {filepath}")
+        return
 
-    # Track last cleanup result using a static variable
-    if not hasattr(cleanup_orphaned_files, "notified") or cleanup_orphaned_files.notified:
-        if not to_delete:
-            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🧼 No stale files found to clean up.")
-            cleanup_orphaned_files.notified = False
-    if to_delete:
-        for source in set(to_delete):
-            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🧹 Removing stale vectors for: {source}")
-            db.delete(where={"source": source})
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ✅ Removed {len(set(to_delete))} stale file(s) from vector store.")
-        cleanup_orphaned_files.notified = True
+    for doc in docs:
+        doc.metadata["source"] = filepath
 
-def ingest_file(filepath):
-    filepath = os.path.abspath(filepath)
-    # Remove old vectors for this file before re-ingesting
-    embedding = OllamaEmbeddings(model=OLLAMA_EMBED_MODEL, base_url=OLLAMA_BASE_URL)
-    db = Chroma(embedding_function=embedding, persist_directory=CHROMA_DIR)
-    db.delete(where={"source": filepath})
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🤖 Using embedding model: {OLLAMA_EMBED_MODEL}")
-    docs = load_document(filepath)
     splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
     chunks = splitter.split_documents(docs)
-    # Debug: Identify any chunks with missing content
-    for i, c in enumerate(chunks):
-        if not c.page_content or not c.page_content.strip():
-            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ❗️ Skipping empty chunk {i} in {filepath}")
-    filtered_chunks = [c for c in chunks if c.page_content and c.page_content.strip()]
-    skipped = len(chunks) - len(filtered_chunks)
-    if skipped:
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ⚠️ Skipped {skipped} empty chunk(s) for {filepath}")
-    chunks = filtered_chunks
+    chunks = [chunk for chunk in chunks if chunk.page_content.strip()]
 
-    for chunk in chunks:
-        chunk.metadata["source"] = filepath
+    if not chunks:
+        print(f"[{datetime.now()}] ⚠️ No valid chunks extracted from: {filepath}")
+        return
 
-    assert all(c.page_content for c in chunks), f"Found chunk with None content in: {filepath}"
-    # Add the updated chunks
-    db.add_documents(documents=chunks)
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ✅ Added {len(chunks)} chunks to Chroma")
+    embedding = OllamaEmbeddings(model=OLLAMA_EMBED_MODEL, base_url=OLLAMA_BASE_URL)
 
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 📄 Embedded chunks:")
-    for chunk in chunks:
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] - {chunk.page_content[:150]}")
+    if os.path.exists(os.path.join(FAISS_DIR, "index.faiss")):
+        try:
+            db = FAISS.load_local(FAISS_DIR, embedding, allow_dangerous_deserialization=True)
+            print(f"[{datetime.now()}] 🧠 FAISS loaded from disk.")
+            # Remove all existing documents from the same source
+            ids_to_delete = [doc_id for doc_id, doc in db.docstore._dict.items()
+                             if doc.metadata.get("source") == filepath]
+            if ids_to_delete:
+                db.delete(ids_to_delete)
+                print(f"[{datetime.now()}] 🧹 Removed {len(ids_to_delete)} old chunks for: {filepath}")
+            else:
+                print(f"[{datetime.now()}] ℹ️ No existing vectors found for: {filepath}")
+        except Exception as e:
+            print(f"[{datetime.now()}] ❌ Failed to load FAISS: {e}")
+            db = None
+    else:
+        db = None
+
+    if db is None:
+        if chunks:
+            db = FAISS.from_documents(chunks, embedding)
+        else:
+            print(f"[{datetime.now()}] ⚠️ No chunks available to initialize FAISS.")
+            return
+    else:
+        db.add_documents(chunks)
+
+    db.save_local(FAISS_DIR)
+    known_hashes[filepath] = new_hash
+    print(f"[{datetime.now()}] ✅ Ingested {len(chunks)} chunks from: {filepath}")
 
 def main():
-    known_hashes = load_hash_db()
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 📂 Watching for files in: {WATCH_DIR}")
+    known_hashes = {}
 
+    # Preload known_hashes from existing FAISS vectorstore, if present
+    if os.path.exists(os.path.join(FAISS_DIR, "index.faiss")):
+        embedding = OllamaEmbeddings(model=OLLAMA_EMBED_MODEL, base_url=OLLAMA_BASE_URL)
+        try:
+            db = FAISS.load_local(FAISS_DIR, embedding, allow_dangerous_deserialization=True)
+            for doc in db.docstore._dict.values():
+                source = doc.metadata.get("source")
+                if source and os.path.exists(source):
+                    known_hashes[source] = file_hash(source)
+
+            # Detect and clean up removed files
+            current_sources = set(doc.metadata.get("source") for doc in db.docstore._dict.values())
+            removed_sources = [src for src in current_sources if not os.path.exists(src)]
+            for removed in removed_sources:
+                ids_to_delete = [doc_id for doc_id, doc in db.docstore._dict.items()
+                                 if doc.metadata.get("source") == removed]
+                if ids_to_delete:
+                    db.delete(ids_to_delete)
+                    print(f"[{datetime.now()}] 🧹 Removed {len(ids_to_delete)} chunks for deleted file on startup: {removed}")
+                    db.save_local(FAISS_DIR)
+                if removed in known_hashes:
+                    del known_hashes[removed]
+        except Exception as e:
+            print(f"[{datetime.now()}] ❌ Failed to preload FAISS vectorstore: {e}")
+
+    print(f"[{datetime.now()}] 📂 Watching for markdown files in: {WATCH_DIR}")
     try:
         while True:
-            all_current_paths = []
+            all_md_files = []
             for root, _, files in os.walk(WATCH_DIR):
                 for fname in files:
-                    if fname.endswith(".pdf") or fname.endswith(".md") or fname.endswith(".epub") or fname.endswith(".xlsx"):
-                        all_current_paths.append(os.path.join(root, fname))
-            cleanup_orphaned_files([os.path.abspath(p) for p in all_current_paths])
-            # Prune known_hashes for missing files
-            missing = [path for path in known_hashes if path not in all_current_paths]
-            if missing:
-                for path in missing:
-                    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🗑️ Removing hash for deleted file: {path}")
-                    del known_hashes[path]
-                save_hash_db(known_hashes)
+                    if fname.lower().endswith(".md"):
+                        full_path = os.path.join(root, fname)
+                        all_md_files.append(full_path)
 
-            for root, _, files in os.walk(WATCH_DIR):
-                for fname in files:
-                    if not (fname.endswith(".pdf") or fname.endswith(".md") or fname.endswith(".epub") or fname.endswith(".xlsx")):
-                        continue
-                    path = os.path.join(root, fname)
-                    h = file_hash(path)
+            for md_file in all_md_files:
+                ingest_markdown(md_file, known_hashes)
 
-                    if known_hashes.get(path) != h:
-                        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🆕 Ingesting: {path}")
-                        try:
-                            ingest_file(path)
-                            known_hashes[path] = h
-                            save_hash_db(known_hashes)
-                            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ✅ Done ingesting: {path}")
-                        except Exception as e:
-                            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ⚠️ Failed to ingest {path}: {e}")
-            
+            # Remove files that were previously ingested but are now deleted
+            removed_files = set(known_hashes.keys()) - set(all_md_files)
+            if removed_files:
+                print(f"[{datetime.now()}] 🗑️ Found removed files: {removed_files}")
+                if os.path.exists(os.path.join(FAISS_DIR, "index.faiss")):
+                    embedding = OllamaEmbeddings(model=OLLAMA_EMBED_MODEL, base_url=OLLAMA_BASE_URL)
+                    try:
+                        db = FAISS.load_local(FAISS_DIR, embedding, allow_dangerous_deserialization=True)
+                        for removed in removed_files:
+                            ids_to_delete = [doc_id for doc_id, doc in db.docstore._dict.items()
+                                             if doc.metadata.get("source") == removed]
+                            if ids_to_delete:
+                                db.delete(ids_to_delete)
+                                print(f"[{datetime.now()}] 🧹 Removed {len(ids_to_delete)} chunks for deleted file: {removed}")
+                                db.save_local(FAISS_DIR)
+                            del known_hashes[removed]
+                    except Exception as e:
+                        print(f"[{datetime.now()}] ❌ Failed to load FAISS for cleanup: {e}")
+
             time.sleep(SCAN_INTERVAL)
     except KeyboardInterrupt:
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] \n👋 Ingest watcher stopped. Goodbye!")
+        print(f"[{datetime.now()}] 👋 Ingest watcher stopped.")
 
 if __name__ == "__main__":
     main()

@@ -124,7 +124,10 @@ def refresh_vectorstore():
 @app.route("/")
 def index():
     import glob
-    file_list = [os.path.basename(f) for f in glob.glob("docs/*.md")]
+    file_list = []
+    for ext in ("*.md", "*.pdf"):
+        file_list.extend([os.path.basename(f) for f in glob.glob(os.path.join("docs", ext))])
+    file_list.sort()
     chat = session.get("chat_history", [])
     refreshed = session.pop("refresh_success", None)
     return render_template("chat-ui.html", files=file_list, chat=chat, refreshed=refreshed)

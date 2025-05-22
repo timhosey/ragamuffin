@@ -3,6 +3,7 @@ import time
 import hashlib
 from datetime import datetime
 from langchain_community.document_loaders import TextLoader
+from langchain_community.document_loaders import PyPDFLoader
 from langchain_core.documents import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_ollama import OllamaEmbeddings
@@ -24,7 +25,7 @@ def load_markdown_file(filepath):
     try:
         loader = TextLoader(filepath)
         docs = loader.load()
-        print(f"[{datetime.now()}] ✅ Loaded {len(docs)} documents from: {filepath}")
+        print(f"[{datetime.now()}] ✅ Loaded {len(docs)} documents/pages from: {filepath}")
         return docs
     except Exception as e:
         print(f"[{datetime.now()}] ❌ Failed to load {filepath}: {e}")
@@ -34,9 +35,9 @@ def file_hash(filepath):
     with open(filepath, 'rb') as f:
         return hashlib.md5(f.read()).hexdigest()
 
-def ingest_markdown(filepath, known_hashes):
-    if not filepath.lower().endswith(".md"):
-        print(f"[{datetime.now()}] ⏭️ Skipping non-markdown file: {filepath}")
+def ingest_file(filepath, known_hashes):
+    if not (filepath.lower().endswith(".md") or filepath.lower().endswith(".pdf")):
+        print(f"[{datetime.now()}] ⏭️ Skipping non-markdown/pdf file: {filepath}")
         return
 
     new_hash = file_hash(filepath)
@@ -44,7 +45,19 @@ def ingest_markdown(filepath, known_hashes):
         return
 
     print(f"[{datetime.now()}] 🔍 Ingesting updated file: {filepath}")
-    docs = load_markdown_file(filepath)
+
+    if filepath.lower().endswith(".md"):
+        docs = load_markdown_file(filepath)
+    elif filepath.lower().endswith(".pdf"):
+        try:
+            loader = PyPDFLoader(filepath)
+            docs = loader.load()
+            print(f"[{datetime.now()}] ✅ Loaded {len(docs)} documents from: {filepath}")
+        except Exception as e:
+            print(f"[{datetime.now()}] ❌ Failed to load {filepath}: {e}")
+            return
+    else:
+        return
 
     if not docs:
         print(f"[{datetime.now()}] ⚠️ No documents loaded from: {filepath}")
@@ -74,7 +87,7 @@ def ingest_markdown(filepath, known_hashes):
                 db.delete(ids_to_delete)
                 print(f"[{datetime.now()}] 🧹 Removed {len(ids_to_delete)} old chunks for: {filepath}")
             else:
-                print(f"[{datetime.now()}] ℹ️ No existing vectors found for: {filepath}")
+                print(f"[{datetime.now()}] ℹ️ Ingesting as no existing vectors found for: {filepath}...")
         except Exception as e:
             print(f"[{datetime.now()}] ❌ Failed to load FAISS: {e}")
             db = None
@@ -122,18 +135,18 @@ def main():
         except Exception as e:
             print(f"[{datetime.now()}] ❌ Failed to preload FAISS vectorstore: {e}")
 
-    print(f"[{datetime.now()}] 📂 Watching for markdown files in: {WATCH_DIR}")
+    print(f"[{datetime.now()}] 📂 Watching for markdown/pdf files in: {WATCH_DIR}")
     try:
         while True:
             all_md_files = []
             for root, _, files in os.walk(WATCH_DIR):
                 for fname in files:
-                    if fname.lower().endswith(".md"):
+                    if fname.lower().endswith(".md") or fname.lower().endswith(".pdf"):
                         full_path = os.path.join(root, fname)
                         all_md_files.append(full_path)
 
-            for md_file in all_md_files:
-                ingest_markdown(md_file, known_hashes)
+            for fpath in all_md_files:
+                ingest_file(fpath, known_hashes)
 
             # Remove files that were previously ingested but are now deleted
             removed_files = set(known_hashes.keys()) - set(all_md_files)

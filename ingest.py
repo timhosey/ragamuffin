@@ -110,33 +110,40 @@ def ingest_file(filepath, known_hashes):
 def main():
     known_hashes = {}
 
-    # Preload known_hashes from existing FAISS vectorstore, if present
-    if os.path.exists(os.path.join(FAISS_DIR, "index.faiss")):
-        embedding = OllamaEmbeddings(model=OLLAMA_EMBED_MODEL, base_url=OLLAMA_BASE_URL)
-        try:
-            db = FAISS.load_local(FAISS_DIR, embedding, allow_dangerous_deserialization=True)
-            for doc in db.docstore._dict.values():
-                source = doc.metadata.get("source")
-                if source and os.path.exists(source):
-                    known_hashes[source] = file_hash(source)
-
-            # Detect and clean up removed files
-            current_sources = set(doc.metadata.get("source") for doc in db.docstore._dict.values())
-            removed_sources = [src for src in current_sources if not os.path.exists(src)]
-            for removed in removed_sources:
-                ids_to_delete = [doc_id for doc_id, doc in db.docstore._dict.items()
-                                 if doc.metadata.get("source") == removed]
-                if ids_to_delete:
-                    db.delete(ids_to_delete)
-                    print(f"[{datetime.now()}] 🧹 Removed {len(ids_to_delete)} chunks for deleted file on startup: {removed}")
-                    db.save_local(FAISS_DIR)
-                if removed in known_hashes:
-                    del known_hashes[removed]
-        except Exception as e:
-            print(f"[{datetime.now()}] ❌ Failed to preload FAISS vectorstore: {e}")
-
-    print(f"[{datetime.now()}] 📂 Watching for markdown/pdf files in: {WATCH_DIR}")
     try:
+        # Preload known_hashes from existing FAISS vectorstore, if present
+        if os.path.exists(os.path.join(FAISS_DIR, "index.faiss")):
+            embedding = OllamaEmbeddings(model=OLLAMA_EMBED_MODEL, base_url=OLLAMA_BASE_URL)
+            try:
+                db = FAISS.load_local(FAISS_DIR, embedding, allow_dangerous_deserialization=True)
+                print(f"[{datetime.now()}] 🔄 FAISS vectorstore successfully loaded during startup.")
+                seen = set()
+                for doc in db.docstore._dict.values():
+                    source = doc.metadata.get("source")
+                    if source in seen:
+                        continue
+                    seen.add(source)
+                    if source and os.path.exists(source):
+                        known_hashes[source] = file_hash(source)
+
+                # Detect and clean up removed files
+                current_sources = set(doc.metadata.get("source") for doc in db.docstore._dict.values())
+                removed_sources = [src for src in current_sources if not os.path.exists(src)]
+                for removed in removed_sources:
+                    ids_to_delete = [doc_id for doc_id, doc in db.docstore._dict.items()
+                                     if doc.metadata.get("source") == removed]
+                    if ids_to_delete:
+                        db.delete(ids_to_delete)
+                        print(f"[{datetime.now()}] 🧹 Removed {len(ids_to_delete)} chunks for deleted file on startup: {removed}")
+                        db.save_local(FAISS_DIR)
+                    if removed in known_hashes:
+                        del known_hashes[removed]
+            except Exception as e:
+                print(f"[{datetime.now()}] ❌ Failed to preload FAISS vectorstore: {e}")
+        
+        print(f"[{datetime.now()}] ✅ Finished preloading FAISS vectorstore. Beginning scan loop.")
+        print(f"[{datetime.now()}] 📂 Watching for markdown/pdf files in: {WATCH_DIR}")
+
         while True:
             all_md_files = []
             for root, _, files in os.walk(WATCH_DIR):
@@ -169,7 +176,7 @@ def main():
 
             time.sleep(SCAN_INTERVAL)
     except KeyboardInterrupt:
-        print(f"[{datetime.now()}] 👋 Ingest watcher stopped.")
+        print(f"[{datetime.now()}] 👋 Ingest watcher stopped gracefully.")
 
 if __name__ == "__main__":
     main()
